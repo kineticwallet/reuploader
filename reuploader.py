@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import time
 import requests
+import urllib
 
 session = requests.session()
 session.headers.update({
@@ -21,6 +22,8 @@ def yes_or_no(prompt: str) -> bool:
 regional_pricing = yes_or_no('Enable Regional Pricing (y/n): ')
 reupload_passes = yes_or_no('Reupload Passes (y/n): ')
 reupload_products = yes_or_no('Reupload Products (y/n): ')
+
+ids = {}
 
 def warn(*args):
     print('\033[93m', *args, '\033[0m')
@@ -45,7 +48,7 @@ def ratelimited_request(method: str, url: str, data=None, files=None):
 
         if response.status_code != 200:
             warn(response.status_code, json.dumps(response.json(), indent=4))    
-            return ratelimited_request(method, url, data, files)
+            warn(url, data, files)
 
         return response  
 
@@ -108,12 +111,12 @@ def get_image_urls(key: str, *args):
 
         return image_urls     
 
-def get_image_bytes(image: str):
+def get_image_bytes(image: str, key: str):
     if image != '':
         response = ratelimited_request('GET', image)
 
         if response.status_code == 200:
-            return { 'file': BytesIO(response.content) }
+            return { key: BytesIO(response.content) }
 
 def get_regional_pricing(details, key: str) -> bool:
     if not regional_pricing:
@@ -129,13 +132,13 @@ def upload_pass(details, image_url: str) -> int:
         'name': details['name'],
         'description': details['description'],
         'universeId': to_universe,
-    }, get_image_bytes(image_url))
+    }, get_image_bytes(image_url, 'file'))
     
     if response.status_code == 200:
         data = { 'isForSale': details['isForSale'] }
         id = response.json()['gamePassId']
 
-        if bool(details['isForSale']) == True:
+        if bool(details['isForSale']):
             data['price'] = details['priceInformation']['defaultPriceInRobux']
             data['isRegionalPricingEnabled'] = get_regional_pricing(details, 'priceInformation')
 
@@ -144,39 +147,55 @@ def upload_pass(details, image_url: str) -> int:
         if response.status_code == 200:
             return id
 
-def upload_product(product, details, image_url: str) -> int: 
-    
-    ##print(product['ProductId'], get_regional_pricing(details, 'PriceInformation'), get_image_bytes(image_url, 'imageFile')) 
-    return 0
+def upload_product(details, image_url: str) -> int: 
+    data = {
+        'name': details['Name'],
+        'description': details['Description']
+    }
 
+    if bool(details['IsForSale']):
+        data['priceInRobux'] = details['PriceInformation']['defaultPriceInRobux']
+       
+        if get_regional_pricing(details, 'PriceInformation'):
+            data['isRegionalPricingEnabled'] = 'true'
+    
+    response = ratelimited_request('POST', f'https://apis.roblox.com/developer-products/v1/universes/{to_universe}/developerproducts?{urllib.parse.urlencode(data)}')
+    
+    if response.status_code == 200:
+        id = response.json()['productId']
+
+        if image_url == '':
+            return id
+
+        response = ratelimited_request('POST', f'https://apis.roblox.com/developer-products/v1/developer-products/{id}/image', files=get_image_bytes(image_url, 'imageFile'))
+
+        if response.status_code == 200:
+            return id
+
+def upload(method_key: str, all_url: str, all_key: str, details_url: str, details_key: str, image_url_key: str):
+    all = get_all(all_url.format(from_universe), all_key)
+
+    if all:
+        details = get_details(details_url, details_key, *all)
+        image_urls = get_image_urls(image_url_key, *list(details.values()))
+
+        if details and image_urls:
+            for _, info in details.items():
+                id = globals()[f'upload_{method_key}'](info, image_urls.get(int(info[image_url_key]), ''))
+                print(int(info[details_key]), " -> ", id)
+                if id:
+                    ids[int(info[details_key])] = id
+        
 if  get_access_permissions(from_universe, to_universe):
     if reupload_passes == True:
-        passes = get_all(f'https://games.roblox.com/v1/games/{from_universe}/game-passes?limit=100', 'data')
-
-        if passes:
-            details = get_details('https://apis.roblox.com/game-passes/v1/game-passes/{}/details', 'id', *passes)
-            image_urls = get_image_urls('iconAssetId', *list(details.values()))
-
-            if details and image_urls:
-                for info in details:
-                     print(upload_pass(info, image_urls.get(int(info['iconAssetId']), '')))
+        upload('pass', 'https://games.roblox.com/v1/games/{}/game-passes?limit=100&sortOrder=1', 'data', 'https://apis.roblox.com/game-passes/v1/game-passes/{}/details', 'id', 'iconAssetId')
                 
     if reupload_products == True:   
-        products = get_all(f'https://apis.roblox.com/developer-products/v2/universes/{from_universe}/developerproducts?limit=100', 'developerProducts')
+        upload('product', 'https://apis.roblox.com/developer-products/v2/universes/{}/developerproducts?limit=100&sortOrder=1', 'developerProducts', 'https://apis.roblox.com/developer-products/v1/developer-products/{}/creator-details', 'ProductId', 'IconImageAssetId')
 
-        if products:
-            details = get_details('https://apis.roblox.com/developer-products/v1/developer-products/{}/creator-details', 'ProductId', *products)
-            image_urls = get_image_urls('IconImageAssetId', *list(details.values()))
-
-            if details and image_urls:
-                for product in products:
-                    id = int(product['ProductId'])
-                    info = details.get(id)
-
-                    if info:
-                        upload_product(product, info, image_urls.get(int(info['IconImageAssetId']), ''))
 else:
     warn(f'missing access permission to {from_universe} or {to_universe}')
 
-session.close()    
-print('123')
+session.close()
+
+print(json.dumps(ids))
