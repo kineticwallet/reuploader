@@ -122,10 +122,7 @@ def get_regional_pricing(details, key: str) -> bool:
     if not regional_pricing:
         return False
 
-    try:
-        return isinstance(details.get(key).get('enabledFeatures').index('RegionalPricing'), int)
-    except: 
-        return False
+    return 'RegionalPricing' in details[key]['enabledFeatures']
 
 def upload_pass(details, image_url: str) -> int:
     response = ratelimited_request('POST', 'https://apis.roblox.com/game-passes/v1/game-passes', {
@@ -181,10 +178,15 @@ def upload(method_key: str, all_url: str, all_key: str, details_url: str, detail
 
         if details and image_urls:
             for _, info in details.items():
-                id = globals()[f'upload_{method_key}'](info, image_urls.get(int(info[image_url_key]), ''))
-                print(int(info[details_key]), " -> ", id)
+                id = int(info[details_key])
+
+                if id in ignore:
+                    continue
+
+                new_id = globals()[f'upload_{method_key}'](info, image_urls.get(int(info[image_url_key]), ''))
+
                 if id:
-                    ids[int(info[details_key])] = id
+                    ids[id] = new_id
         
 if  get_access_permissions(from_universe, to_universe):
     if reupload_passes == True:
@@ -197,5 +199,4 @@ else:
     warn(f'missing access permission to {from_universe} or {to_universe}')
 
 session.close()
-
 print(json.dumps(ids))
